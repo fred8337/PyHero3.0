@@ -7,7 +7,7 @@ import cv2
 from tensorflow import keras
 from keras.callbacks import TensorBoard
 from keras.models import Sequential
-from keras.optimizers import Adam
+from keras.optimizers import Adam, RMSprop
 from keras.layers import Input, Dense, Dropout, Conv2D, MaxPooling2D, Activation, Flatten
 from collections import deque
 
@@ -63,7 +63,7 @@ class dqn_cart:
 
         # HyperParameters
         self.epsilon = 1
-        self.lr = 0.001
+        self.lr = 0.01
         self.lr_decay = 0.01
 
         # Initialize replay memory
@@ -89,20 +89,20 @@ class dqn_cart:
 
             model = Sequential()
 
-            model.add(Conv2D(64, (3, 3), padding="valid", input_shape=input_shape, data_format="channels_first"))
+            model.add(Conv2D(64, 5, (3, 3), padding="valid", input_shape=input_shape, data_format="channels_first"))
             model.add(Activation("relu"))
             # model.add(MaxPooling2D(pool_size=(2, 2)))
             model.add(Dropout(0.2))
 
-            model.add(Conv2D(64, (2, 2), padding="valid", data_format="channels_first"))
+            model.add(Conv2D(64, 4, (2, 2), padding="valid", data_format="channels_first"))
             model.add(Activation("relu"))
             # model.add(MaxPooling2D(pool_size=(2, 2)))
-            model.add(Dropout(0.2))
+            # model.add(Dropout(0.2))
 
-            model.add(Conv2D(64, (1, 1), padding="valid", data_format="channels_first"))
+            model.add(Conv2D(64, 3, (1, 1), padding="valid", data_format="channels_first"))
             model.add(Activation("relu"))
             # model.add(MaxPooling2D(pool_size=(2, 2)))
-            model.add(Dropout(0.2))
+            # model.add(Dropout(0.2))
 
             model.add(Flatten())
 
@@ -110,7 +110,7 @@ class dqn_cart:
             model.add(Dense(256, activation="relu", kernel_initializer="he_uniform"))
             model.add(Dense(64, activation="relu", kernel_initializer="he_uniform"))
             model.add(Dense(2, activation="linear", kernel_initializer="he_uniform"))
-            model.compile(loss="mse", optimizer=Adam(lr=self.lr), metrics=[])
+            model.compile(loss="mse", optimizer=RMSprop(lr=0.00025, rho=0.95, epsilon=0.01), metrics=[])
         return model
 
     def preprocess_state(self, state):
@@ -188,7 +188,7 @@ class dqn_cart:
             if score>best_score:
                 best_score = score
                 self.model.save("my_model_CNN")
-            print("Episode: "+str(episode)+" Score: "+str(score)+" Avg:"+str(np.mean(scores))+" eps: "+str(self.epsilon))
+            print("Episode: "+str(episode)+" Score: "+str(score)+" Avg:"+str(np.mean(scores[-50:]))+" eps: "+str(self.epsilon))
             self.experience_replay()
             self.scores.append(score)
 
@@ -208,7 +208,7 @@ class dqn_cart:
             X.append(state[0])
             y.append(y_target[0])
 
-        self.model.fit(np.array(X), np.array(y), batch_size=len(X), epochs=1, verbose=0, shuffle=False)
+        self.model.fit(np.array(X), np.array(y), batch_size=len(X), epochs=1, verbose=1, shuffle=False)
 
         if self.epsilon > EPSILON_MINIMUM:
             self.epsilon *= EPSILON_DECAY

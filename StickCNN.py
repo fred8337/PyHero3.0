@@ -6,9 +6,10 @@ import cv2
 
 from tensorflow import keras
 from keras.callbacks import TensorBoard
-from keras.models import Sequential
-from keras.optimizers import Adam
-from keras.layers import Input, Dense, Dropout, Conv2D, MaxPooling2D, Activation, Flatten
+from keras.models import Sequential, Model
+from keras.optimizers import Adam, RMSprop
+from keras import backend as K
+from keras.layers import Input, Dense, Dropout, Conv2D, MaxPooling2D, Activation, Flatten, merge, Add, Lambda
 from collections import deque
 
 #HyperParameters
@@ -65,14 +66,17 @@ class dqn_cart:
         self.epsilon = 1
         self.lr = 0.001
         self.lr_decay = 0.01
+        self.min_mem = 100
+        self.training = False
+        self.epochs = 1
 
         # Initialize replay memory
         self.replay_memory = deque(maxlen=MEMORY_SIZE)
         # print(self.env.action_space.n) #[Output: ] Discrete(2)
         # print(self.env.observation_space) # [Output: ] Box(4,)
         self.steps_to_remember = 4
-        self.rows = 32
-        self.cols = 48
+        self.rows = 160
+        self.cols = 240
         self.state_memory = np.zeros((self.rows, self.cols,self.steps_to_remember))
 
         # Create model and target model
@@ -89,28 +93,70 @@ class dqn_cart:
 
             model = Sequential()
 
-            model.add(Conv2D(64, (3, 3), padding="valid", input_shape=input_shape, data_format="channels_last"))
+            model.add(Conv2D(64, 5, (3, 3), padding="valid", input_shape=input_shape, data_format="channels_last"))
             model.add(Activation("relu"))
             # model.add(MaxPooling2D(pool_size=(2, 2)))
-            model.add(Dropout(0.2))
+            # model.add(Dropout(0.2))
 
-            model.add(Conv2D(64, (2, 2), padding="valid", data_format="channels_last"))
+            model.add(Conv2D(64, 4, (2, 2), padding="valid", data_format="channels_last"))
             model.add(Activation("relu"))
             # model.add(MaxPooling2D(pool_size=(2, 2)))
-            model.add(Dropout(0.2))
+            # model.add(Dropout(0.2))
 
-            model.add(Conv2D(64, (1, 1), padding="valid", data_format="channels_last"))
-            model.add(Activation("relu"))
+            # model.add(Conv2D(64, 3, (1, 1), padding="valid", data_format="channels_last"))
+            # model.add(Activation("relu"))
             # model.add(MaxPooling2D(pool_size=(2, 2)))
-            model.add(Dropout(0.2))
+            # model.add(Dropout(0.2))
 
             model.add(Flatten())
 
-            model.add(Dense(512, input_dim=4, activation="relu", kernel_initializer="he_uniform"))
+            model.add(Dense(512, activation="relu", kernel_initializer="he_uniform"))
             model.add(Dense(256, activation="relu", kernel_initializer="he_uniform"))
             model.add(Dense(64, activation="relu", kernel_initializer="he_uniform"))
             model.add(Dense(2, activation="linear", kernel_initializer="he_uniform"))
-            model.compile(loss="mse", optimizer=Adam(lr=self.lr), metrics=[])
+            model.compile(loss="mse", optimizer=RMSprop(lr=0.00025, rho=0.95, epsilon=0.01), metrics=[])
+        return model
+
+    def create_model_duelling(self, model=None):
+        if model is not None:
+            model = keras.models.load_model(model)
+        else:
+            input_shape = (self.rows, self.cols, 4)
+            X_input = Input(input_shape)
+            X = X_input
+
+            X = Conv2D(64, 5, strides=(3, 3), padding="valid", input_shape=input_shape, activation="relu",
+                       data_format="channels_last")(X)
+            X = Conv2D(64, 4, strides=(2, 2), padding="valid", activation="relu", data_format="channels_last")(X)
+            X = Conv2D(64, 3, strides=(1, 1), padding="valid", activation="relu", data_format="channels_last")(X)
+            X = Flatten()(X)
+            # 'Dense' is the basic form of a neural network layer
+            # Input Layer of state size(4) and Hidden Layer with 512 nodes
+            X = Dense(512, activation="relu", kernel_initializer='he_uniform')(X)
+
+            # Hidden layer with 256 nodes
+            X = Dense(256, activation="relu", kernel_initializer='he_uniform')(X)
+
+            # Hidden layer with 64 nodes
+            X = Dense(64, activation="relu", kernel_initializer='he_uniform')(X)
+
+
+            state_value = Dense(1, kernel_initializer='he_uniform')(X)
+            state_value = Lambda(lambda s: K.expand_dims(s[:, 0], -1), output_shape=(2,))(state_value)
+
+            action_advantage = Dense(2, kernel_initializer='he_uniform')(X)
+            action_advantage = Lambda(lambda a: a[:, :] - K.mean(a[:, :], keepdims=True),
+                                      output_shape=(2,))(action_advantage)
+
+            X = Add()([state_value, action_advantage])
+
+
+            model = Model(inputs=X_input, outputs=X)
+            model.compile(loss="mean_squared_error", optimizer=RMSprop(lr=0.00025, rho=0.95, epsilon=0.01),
+                          metrics=["accuracy"])
+
+            model.summary()
+            return model
         return model
 
     def preprocess_state(self, state):
@@ -120,7 +166,6 @@ class dqn_cart:
         self.replay_memory.append(transition)
 
     def show_state(self, state=None):
-        #Dead
         if state is None:
             for i in range(4):
                 cv2.imshow('image '+str(i), self.state_memory[:,:,i])
@@ -144,10 +189,10 @@ class dqn_cart:
 
         # print(self.state_memory.shape)
 
-        self.state_memory = np.roll(self.state_memory, 1, axis=2)
+        self.state_memory = np.roll(self.state_memory, -1, axis=2)
         self.state_memory[:,:,0] = img_rgb_resized
 
-        # res = self.state_memory.reshape((4,self.rows, self.cols))
+        # res = self.state_memory.reshape((-1,4,self.rows, self.cols))
         res = np.expand_dims(self.state_memory, axis=0)
 
         # cv2.imshow('image', self.state_memory[:,:,0])
@@ -188,8 +233,13 @@ class dqn_cart:
             if score>best_score:
                 best_score = score
                 self.model.save("my_model_CNN")
-            print("Episode: "+str(episode)+" Score: "+str(score)+" Avg:"+str(np.mean(scores))+" eps: "+str(self.epsilon))
-            self.experience_replay()
+            print("Episode: "+str(episode)+" Score: "+str(score)+" Avg:"+str(np.mean(scores[-50:]))+" eps: "+str(self.epsilon))
+            if not self.training:
+                if len(self.replay_memory)>self.min_mem:
+                    self.training = True
+            if self.training:
+                for i in range(self.epochs):
+                    self.experience_replay(batch_size=128)
             self.scores.append(score)
 
 
@@ -198,16 +248,20 @@ class dqn_cart:
         y = []
         mini_batch = random.sample(self.replay_memory, min(batch_size, len(self.replay_memory)))
         for state, action, reward, new_state, done in mini_batch:
+            # if (state==new_state).all():
+            #     print("FUCK")
             # print(state.shape)
-            y_target = self.target_model.predict(state)
+            y_target = self.model.predict(state)
             y_target[0][action] = reward if done else reward+DISCOUNT*np.max(self.target_model.predict(new_state)[0])
             # print(state[0].shape)
             # cv2.imshow('image', state[0][:,:,0])
             # cv2.waitKey(0)
             # cv2.destroyAllWindows()
+            # print(state.shape)
             X.append(state[0])
             y.append(y_target[0])
-
+        # for state in X:
+        #     self.show_state(state)
         self.model.fit(np.array(X), np.array(y), batch_size=len(X), epochs=1, verbose=0, shuffle=False)
 
         if self.epsilon > EPSILON_MINIMUM:
@@ -220,7 +274,7 @@ class dqn_cart:
 
 
 if __name__ == "__main__":
-    solver = dqn_cart()
+    solver = dqn_cart("my_model_cnn")
     for episode in range(10):
     # print(solver.get_image_state())
         solver.train(1000)
